@@ -131,13 +131,32 @@ export MSYSTEM=MINGW64
 export MSYS2_PATH_TYPE=inherit
 
 # Add QMK MSYS toolchain to PATH
-export PATH="$QMK_MSYS_PATH/mingw64/bin:$QMK_MSYS_PATH/usr/bin:$PATH"
+export PATH="$QMK_MSYS_PATH/mingw64/bin:$QMK_MSYS_PATH/usr/bin:$QMK_MSYS_PATH/opt/qmk/bin:$PATH"
 
 log_ok "Environment variables configured"
 
 # ---- Step 2: Change to Project Directory ----
 cd "$PROJECT_DIR"
 log_ok "Working directory: $(pwd)"
+
+# ---- Step 2.1: Create qmk wrapper ----
+# MSYS2 sh strips USERPROFILE/HOMEDRIVE/HOMEPATH when spawning child processes,
+# but Python's Path.home() on Windows requires these vars.
+# A wrapper script re-exports them before calling the real qmk.exe.
+QMK_WRAPPER_DIR="$PWD/.build"
+mkdir -p "$QMK_WRAPPER_DIR"
+QMK_WRAPPER="$QMK_WRAPPER_DIR/qmk"
+cat > "$QMK_WRAPPER" <<WRAPPER_EOF
+#!/bin/bash
+export USERPROFILE='C:\\Users\\tony'
+export HOMEDRIVE=C:
+export HOMEPATH='\\Users\\tony'
+export HOME=/c/Users/tony
+export SHELL=/usr/bin/bash
+exec "$QMK_MSYS_PATH/mingw64/bin/qmk.exe" "\$@"
+WRAPPER_EOF
+chmod +x "$QMK_WRAPPER"
+export PATH="$QMK_WRAPPER_DIR:$PATH"
 
 # ---- Step 3: Verify Prerequisites ----
 log_info "Checking prerequisites..."
@@ -149,12 +168,12 @@ if ! command -v arm-none-eabi-gcc &>/dev/null; then
 fi
 log_ok "ARM GCC: $(arm-none-eabi-gcc --version | head -1)"
 
-# Check qmk command
+# Check qmk command (wrapper should be first in PATH)
 if ! command -v qmk &>/dev/null; then
     log_error "'qmk' command not found. Ensure QMK MSYS is installed at: $QMK_MSYS_PATH"
     exit 1
 fi
-log_ok "QMK CLI available"
+log_ok "QMK CLI available ($(which qmk))"
 
 # ---- Step 4: Ensure printf.c placeholder exists ----
 PRINTF_FILE="platforms/chibios/printf.c"
@@ -219,7 +238,7 @@ build_keymap() {
 
     local start_time=$(date +%s)
 
-    if qmk compile -kb "$KEYBOARD" -km "$keymap"; then
+    if make "$KEYBOARD:$keymap"; then
         local end_time=$(date +%s)
         local duration=$((end_time - start_time))
 
@@ -264,11 +283,11 @@ log_info "========================================"
 log_info "Build Summary"
 log_info "========================================"
 
-local kb_flat=$(echo "$KEYBOARD" | tr '/' '_')
+kb_flat=$(echo "$KEYBOARD" | tr '/' '_')
 for f in ${kb_flat}_*.bin; do
     if [[ -f "$f" ]]; then
-        local_size=$(du -h "$f" | cut -f1)
-        log_ok "$f ($local_size)"
+        fsize=$(du -h "$f" | cut -f1)
+        log_ok "$f ($fsize)"
     fi
 done
 
@@ -282,3 +301,6 @@ fi
 echo ""
 log_info "Firmware files are in: $PROJECT_DIR"
 log_info "Use QMK Toolbox or dfu-util to flash the firmware."
+
+# ---- Cleanup ----
+rm -f "$QMK_WRAPPER"
